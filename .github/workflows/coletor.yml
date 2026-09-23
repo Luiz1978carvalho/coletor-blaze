@@ -13,33 +13,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests supabase
-      - env:
+      - name: Instalar libs
+        run: pip install requests supabase
+      - name: Coletar giros
+        env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python - << 'PY'
           import requests, time, os
           from supabase import create_client
+          
           supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-          URLS = ["https://blaze.bet.br/api/singleplayer-originals/originals/recent/double"]
-          HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://blaze.bet.br/"}
+          
+          URLS = [
+            "https://blaze.com/api/singleplayer-originals/originals/recent",
+            "https://blaze.bet.br/api/singleplayer-originals/originals/recent/double",
+          ]
+          HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://blaze.com/"}
+          
           def get_color(c, roll):
               if c==0 or roll==0: return "white"
               if c==1: return "red"
               if c==2: return "black"
               return "red" if 1 <= roll <= 7 else "black"
-          start = time.time()
-          while time.time() - start < 240:
+          
+          seen=set()
+          start=time.time()
+          while time.time()-start < 230:
               try:
-                  r = requests.get(URLS[0], headers=HEADERS, timeout=10)
-                  if r.status_code==200:
-                      data=r.json()
-                      arr=data if isinstance(data,list) else (data.get('records') or data.get('data') or [])
-                      for j in arr[:20]:
-                          roll=j.get('roll') or 0
-                          supabase.table("rolls").upsert({"id":str(j.get('id')), "roll":int(roll), "color":get_color(j.get('color'), roll), "timestamp":j.get('created_at')}, on_conflict="id").execute()
-                      print(f"OK {len(arr)} jogos")
-              except Exception as e: print(e)
-              time.sleep(15)
+                  data=None
+                  for url in URLS:
+                      try:
+                          r=requests.get(url, headers=HEADERS, timeout=10)
+                          if r.status_code==200:
+                              j=r.json()
+                              data=j if isinstance(j, list) else j.get("records", [])
+                              print(f"✅ {url} OK {len(data)}")
+                              break
+                          else:
+                              print(f"⚠️ {url} {r.status_code}")
+                      except Exception as e:
+                          print(f"❌ {url} {e}")
+                  if not data:
+                      time.sleep(5)
+                      continue
+                  for item in data[:20]:
+                      rid=str(item.get("id") or item.get("_id") or "")
+                      rval=item.get("roll")
+                      col=item.get("color")
+                      if isinstance(col, int): col=get_color(col, rval)
+                      if not rid or rval is None: continue
+                      if rid in seen: continue
+                      row={"id": rid, "roll": int(rval), "color": str(col).lower(), "timestamp": item.get("created_at") or item.get("updated_at")}
+                      supabase.table("rolls").upsert(row, on_conflict="id").execute()
+                      seen.add(rid)
+                      print(f" -> {row['roll']} {row['color']}")
+                  time.sleep(15)
+              except Exception as e:
+                  print(f"Erro: {e}")
+                  time.sleep(5)
+          print(f"Finalizado total {len(seen)}")
           PY

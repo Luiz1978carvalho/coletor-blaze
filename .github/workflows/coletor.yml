@@ -15,63 +15,89 @@ jobs:
           python-version: '3.11'
       - name: Instalar libs
         run: pip install requests supabase
-      - name: Coletar giros
+      - name: Coletar giros com Proxy
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python - << 'PY'
-          import requests, time, os
+          import requests, time, os, urllib.parse
           from supabase import create_client
-          
+
           supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+          TARGET = "https://blaze.com/api/singleplayer-originals/originals/recent"
           
-          URLS = [
-            "https://blaze.com/api/singleplayer-originals/originals/recent",
-            "https://blaze.bet.br/api/singleplayer-originals/originals/recent/double",
+          # Lista de proxys gratuitos que funcionam no Actions
+          PROXIES = [
+              f"https://api.allorigins.win/raw?url={urllib.parse.quote(TARGET, safe='')}",
+              f"https://corsproxy.io/?{urllib.parse.quote(TARGET, safe='')}",
+              f"https://api.codetabs.com/v1/proxy?quest={urllib.parse.quote(TARGET, safe='')}",
           ]
-          HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://blaze.com/"}
-          
+
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "Referer": "https://blaze.com/",
+          }
+
           def get_color(c, roll):
               if c==0 or roll==0: return "white"
               if c==1: return "red"
               if c==2: return "black"
               return "red" if 1 <= roll <= 7 else "black"
-          
+
           seen=set()
           start=time.time()
+          print("🚀 Iniciando com proxy...")
+
           while time.time()-start < 230:
-              try:
-                  data=None
-                  for url in URLS:
-                      try:
-                          r=requests.get(url, headers=HEADERS, timeout=10)
-                          if r.status_code==200:
-                              j=r.json()
-                              data=j if isinstance(j, list) else j.get("records", [])
-                              print(f"✅ {url} OK {len(data)}")
+              data=None
+              for proxy_url in PROXIES:
+                  try:
+                      print(f"Tentando proxy: {proxy_url[:60]}...")
+                      r=requests.get(proxy_url, headers=HEADERS, timeout=20)
+                      print(f"Status: {r.status_code} len: {len(r.text)}")
+                      if r.status_code==200:
+                          j=r.json()
+                          # allorigins as vezes retorna lista dentro de string
+                          if isinstance(j, str):
+                              import json
+                              j=json.loads(j)
+                          data=j if isinstance(j, list) else j.get("records", j) if isinstance(j, dict) else None
+                          if data and len(data)>0:
+                              print(f"✅ SUCESSO com proxy! {len(data)} giros")
                               break
-                          else:
-                              print(f"⚠️ {url} {r.status_code}")
-                      except Exception as e:
-                          print(f"❌ {url} {e}")
-                  if not data:
-                      time.sleep(5)
+                  except Exception as e:
+                      print(f"❌ Proxy falhou: {e}")
                       continue
-                  for item in data[:20]:
+              
+              if not data:
+                  print("Nenhum dado, esperando 10s...")
+                  time.sleep(10)
+                  continue
+
+              novos=0
+              for item in data[:20]:
+                  try:
                       rid=str(item.get("id") or item.get("_id") or "")
                       rval=item.get("roll")
                       col=item.get("color")
                       if isinstance(col, int): col=get_color(col, rval)
                       if not rid or rval is None: continue
                       if rid in seen: continue
+                      
                       row={"id": rid, "roll": int(rval), "color": str(col).lower(), "timestamp": item.get("created_at") or item.get("updated_at")}
                       supabase.table("rolls").upsert(row, on_conflict="id").execute()
                       seen.add(rid)
-                      print(f" -> {row['roll']} {row['color']}")
-                  time.sleep(15)
-              except Exception as e:
-                  print(f"Erro: {e}")
-                  time.sleep(5)
-          print(f"Finalizado total {len(seen)}")
+                      novos+=1
+                      print(f" -> SALVO {row['roll']} {row['color']}")
+                  except Exception as e:
+                      print(f"Erro insert: {e}")
+              
+              if novos>0:
+                  print(f"💾 {novos} novos! Total: {len(seen)}")
+              
+              time.sleep(20)
+
+          print(f"🏁 Fim. Total coletado: {len(seen)}")
           PY

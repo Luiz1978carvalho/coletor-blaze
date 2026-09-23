@@ -1,0 +1,45 @@
+name: Coletor Blaze 24/7
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests supabase
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python - << 'PY'
+          import requests, time, os
+          from supabase import create_client
+          supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+          URLS = ["https://blaze.bet.br/api/singleplayer-originals/originals/recent/double"]
+          HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://blaze.bet.br/"}
+          def get_color(c, roll):
+              if c==0 or roll==0: return "white"
+              if c==1: return "red"
+              if c==2: return "black"
+              return "red" if 1 <= roll <= 7 else "black"
+          start = time.time()
+          while time.time() - start < 240:
+              try:
+                  r = requests.get(URLS[0], headers=HEADERS, timeout=10)
+                  if r.status_code==200:
+                      data=r.json()
+                      arr=data if isinstance(data,list) else (data.get('records') or data.get('data') or [])
+                      for j in arr[:20]:
+                          roll=j.get('roll') or 0
+                          supabase.table("rolls").upsert({"id":str(j.get('id')), "roll":int(roll), "color":get_color(j.get('color'), roll), "timestamp":j.get('created_at')}, on_conflict="id").execute()
+                      print(f"OK {len(arr)} jogos")
+              except Exception as e: print(e)
+              time.sleep(15)
+          PY
